@@ -1,4 +1,8 @@
 #include "ecdsa_module.h"
+#include <crypto/internal/ecc.h> // 
+#include <crypto/ecdh.h> // struct ecdh_ctx
+
+// without asn1 encode/decode, test_key = private_key || pubkey.x || pubkey.y
 
 // nist p-256, without asn1 encode/decode
 unsigned int key_len = 96;
@@ -37,11 +41,13 @@ unsigned int c_size = 70;
 
 u8 *signature_result = NULL;
 
+u8 test_key3[192] = {0}; // generated random_key
+
 
 struct crypto_akcipher *tfm;
 
-/*
-static int init_ctx_setkey_no_asn1(void)
+
+static int init_ctx_setkey_no_asn1(u8 *test_key, int key_len)
 {
 	u8 *key, *ptr;
 	int err = -ENOMEM;
@@ -54,8 +60,8 @@ static int init_ctx_setkey_no_asn1(void)
 		return err;
 
 	memcpy(key, test_key, key_len);
-	ptr = key + key_len;
-	ptr = test_pack_u32(ptr, algo);
+	//ptr = key + key_len;
+	//ptr = test_pack_u32(ptr, algo);
 
 	//printk("kmalloc\n");
 	
@@ -71,7 +77,7 @@ static int init_ctx_setkey_no_asn1(void)
 free_key:
 	kfree(key);
 	return err;
-}*/
+}
 
 static int init_ctx_setkey_with_asn1(void)
 {
@@ -99,6 +105,71 @@ static int init_ctx_setkey_with_asn1(void)
 
 free_key:
 	kfree(key);
+	return err;
+}
+
+/*
+
+#define ECC_CURVE_NIST_P192	0x0001
+#define ECC_CURVE_NIST_P256	0x0002
+#define ECC_CURVE_NIST_P384	0x0003
+#define ECC_CURVE_SM2	0x0004
+
+
+#define ECC_CURVE_NIST_P192_DIGITS  3
+#define ECC_CURVE_NIST_P256_DIGITS  4
+#define ECC_CURVE_NIST_P384_DIGITS  6
+#define ECC_CURVE_SM2_DIGITS  4
+*/
+
+static int init_ctx_randkey(void)
+{
+	int err = -ENOMEM;
+
+	//tfm = crypto_alloc_akcipher("ecdsa-sm2-generic", 0, 0);
+	tfm = crypto_alloc_akcipher("ecdsa-nist-p256-generic", 0, 0);
+
+
+	u64 *priv_key = kmalloc(sizeof(u64) * ECC_CURVE_NIST_P256_DIGITS, GFP_KERNEL); // private_key || pubkey.x || pubkey.y
+	if (!priv_key)
+		goto free_key;
+	u64 *pub_key = kmalloc(sizeof(u64) * ECC_CURVE_NIST_P256_DIGITS * 2, GFP_KERNEL); // private_key || pubkey.x || pubkey.y
+	if (!pub_key)
+		goto free_key;
+
+	err = ecc_gen_privkey(ECC_CURVE_NIST_P256, ECC_CURVE_NIST_P256_DIGITS, priv_key);
+
+	if(err)
+		goto free_key;
+	
+	printk("ecc_gen_privkey\n");
+
+	//memcpy(priv_key, test_key, sizeof(u64) * ECC_CURVE_NIST_P256_DIGITS);
+
+	memcpy(test_key3, priv_key, ECC_CURVE_NIST_P256_DIGITS*sizeof(u64));
+
+	err = ecc_make_pub_key(ECC_CURVE_NIST_P256, ECC_CURVE_NIST_P256_DIGITS, priv_key, pub_key);
+
+	if(err)
+		goto free_key;
+	
+	printk("ecc_make_pub_key\n");
+
+	memcpy(test_key3 + ECC_CURVE_NIST_P256_DIGITS*sizeof(u64), pub_key, ECC_CURVE_NIST_P256_DIGITS*sizeof(u64)*2);
+
+	for(int i = 0; i < key_len; i++)
+		printk("%02x", test_key3[i]);
+
+	err = crypto_akcipher_set_key_noasn1_rawu64bytes(tfm, test_key3, key_len);
+	if(err)
+		goto free_key;
+	
+	printk("crypto_akcipher_set_key_noasn1_rawu64bytes\n");
+	
+
+free_key:
+	if(priv_key) kfree(priv_key);
+	if(pub_key) kfree(pub_key);
 	return err;
 }
 
@@ -234,6 +305,8 @@ static int verify(void)
 	err = -E2BIG;
 	if (WARN_ON(c_size > PAGE_SIZE))
 		goto free_all;
+
+	// signature_result[0] = 0xa; // for test only: generate wrong signature
 	memcpy(xbuf[0], signature_result, c_size); // @zhaoyang, 验证方把签名结果作为输入，由于signature_result和c是一样的，所以这里也可以用c
 
 	sg_init_table(src_tab, 3);
@@ -277,9 +350,13 @@ static int __init ecdsa_kernel_module_init(void)
 	printk(KERN_INFO "Entering ecdsa_module\n");
 	int err = -ENOMEM;
 
-	//if(init_ctx_setkey_no_asn1() != 0)
-	if(init_ctx_setkey_with_asn1() != 0) //设置密钥，发送方和接收方都需要运行这个函数
-		return err;
+	init_ctx_randkey(); // use case 1: init random key
+
+	//if(init_ctx_setkey_no_asn1(test_key, key_len) != 0) // use case 2: init key from key buffer without asn1 decoding
+	//	return err;
+	
+	//if(init_ctx_setkey_with_asn1() != 0) //设置密钥，发送方和接收方都需要运行这个函数 // use case 3: init key from key buffer with asn1 decoding
+	//	return err;
 	
 	sign(); // 这个函数产生签名的结果，并存在全局变量signature_result里
 

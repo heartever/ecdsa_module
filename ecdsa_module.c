@@ -44,6 +44,13 @@ u8 *signature_result = NULL;
 u8 test_key3[192] = {0}; // generated random_key
 
 
+// sm2 test vectors
+// private key: 0x9A6D6579D2AE5BE7385B17A7658895517AD50FFA64C77F97EC1989B5DEF9E4E0
+// public key: 0x85E3CFB5FC7FEA7AAA41C2FEAE66BCC61A03524A5C9B2FDC9DA9C8D65D8D340F 0xFD80A28241EE9707612BA12AA8030DF994BACB98041D44299161AEC8BC2F1BC4
+u8 sm2_key[] = "\x9A\x6D\x65\x79\xD2\xAE\x5B\xE7\x38\x5B\x17\xA7\x65\x88\x95\x51\x7A\xD5\x0F\xFA\x64\xC7\x7F\x97\xEC\x19\x89\xB5\xDE\xF9\xE4\xE0"
+	"\x85\xE3\xCF\xB5\xFC\x7F\xEA\x7A\xAA\x41\xC2\xFE\xAE\x66\xBC\xC6\x1A\x03\x52\x4A\x5C\x9B\x2F\xDC\x9D\xA9\xC8\xD6\x5D\x8D\x34\x0F\xFD\x80"
+	"\xA2\x82\x41\xEE\x97\x07\x61\x2B\xA1\x2A\xA8\x03\x0D\xF9\x94\xBA\xCB\x98\x04\x1D\x44\x29\x91\x61\xAE\xC8\xBC\x2F\x1B\xC4";
+
 struct crypto_akcipher *tfm;
 
 
@@ -84,8 +91,8 @@ static int init_ctx_setkey_with_asn1(void)
 	u8 *key, *ptr;
 	int err = -ENOMEM;
 
-	//tfm = crypto_alloc_akcipher("ecdsa-sm2-generic", 0, 0);
-	tfm = crypto_alloc_akcipher("ecdsa-nist-p256-generic", 0, 0);
+	tfm = crypto_alloc_akcipher("ecdsa-sm2-generic", 0, 0);
+	//tfm = crypto_alloc_akcipher("ecdsa-nist-p256-generic", 0, 0);
 
 	key = kmalloc(key_len2 + sizeof(u32) * 2, GFP_KERNEL);
 	if (!key)
@@ -126,8 +133,11 @@ static int init_ctx_randkey(void)
 {
 	int err = -ENOMEM;
 
-	//tfm = crypto_alloc_akcipher("ecdsa-sm2-generic", 0, 0);
-	tfm = crypto_alloc_akcipher("ecdsa-nist-p256-generic", 0, 0);
+	tfm = crypto_alloc_akcipher("ecdsa-sm2-generic", 0, 0);
+	int curve = ECC_CURVE_SM2;
+
+	//tfm = crypto_alloc_akcipher("ecdsa-nist-p256-generic", 0, 0);
+	//int curve = ECC_CURVE_NIST_P256; //ECC_CURVE_SM2
 
 
 	u64 *priv_key = kmalloc(sizeof(u64) * ECC_CURVE_NIST_P256_DIGITS, GFP_KERNEL); // private_key || pubkey.x || pubkey.y
@@ -137,18 +147,22 @@ static int init_ctx_randkey(void)
 	if (!pub_key)
 		goto free_key;
 
-	err = ecc_gen_privkey(ECC_CURVE_NIST_P256, ECC_CURVE_NIST_P256_DIGITS, priv_key);
+	
+	// use test keys
+	// memcpy(priv_key, test_key, sizeof(u64) * ECC_CURVE_NIST_P256_DIGITS); // p-256 test keys 
+	memcpy(priv_key, sm2_key, sizeof(u64) * ECC_CURVE_NIST_P256_DIGITS); // sm2 test keys 
+
+	/*err = ecc_gen_privkey(curve, ECC_CURVE_NIST_P256_DIGITS, priv_key);
 
 	if(err)
 		goto free_key;
 	
-	printk("ecc_gen_privkey\n");
-
-	//memcpy(priv_key, test_key, sizeof(u64) * ECC_CURVE_NIST_P256_DIGITS);
+	printk("ecc_gen_privkey\n");*/
+	
+	
 
 	memcpy(test_key3, priv_key, ECC_CURVE_NIST_P256_DIGITS*sizeof(u64));
-
-	err = ecc_make_pub_key(ECC_CURVE_NIST_P256, ECC_CURVE_NIST_P256_DIGITS, priv_key, pub_key);
+	err = ecc_make_pub_key(curve, ECC_CURVE_NIST_P256_DIGITS, priv_key, pub_key);
 
 	if(err)
 		goto free_key;
@@ -157,8 +171,8 @@ static int init_ctx_randkey(void)
 
 	memcpy(test_key3 + ECC_CURVE_NIST_P256_DIGITS*sizeof(u64), pub_key, ECC_CURVE_NIST_P256_DIGITS*sizeof(u64)*2);
 
-	for(int i = 0; i < key_len; i++)
-		printk("%02x", test_key3[i]);
+	//for(int i = 0; i < key_len; i++)
+	//	printk("%02x", test_key3[i]);
 
 	err = crypto_akcipher_set_key_noasn1_rawu64bytes(tfm, test_key3, key_len);
 	if(err)
@@ -233,6 +247,8 @@ static int sign(void)
 	}
 
 	out_len = req->dst_len;
+
+	c_size = out_len;
 	if (out_len < c_size) {
 		pr_err("alg: akcipher: %s test failed. Invalid output len %u\n",
 		       op, out_len);
@@ -240,18 +256,20 @@ static int sign(void)
 		goto free_all;
 	}
 
+	printk("out_len: %d\n", out_len);
+
 	signature_result = kmalloc(c_size, GFP_KERNEL);
 
 	memcpy(signature_result, outbuf_dec + out_len - c_size, c_size);
 	
-	/*printk("Output generated signature: ");
+	printk("Output generated signature: ");
 	for(int i = 0; i < c_size; i++)
-		printk("%02x", *(char *)(signature_result + i));*/
-	
+		printk("%d: %02x", i, *(char *)(signature_result + i));
+	/*
 	if(memcmp(signature_result, c, c_size) == 0)
 		printk("signature correct!\n");
 	else 
-		printk("signature incorrect!\n");
+		printk("signature incorrect!\n");*/
 
 	err = 0;
 	
@@ -293,6 +311,8 @@ static int verify(void)
 	crypto_init_wait(&wait);
 	
 	//printk("crypto_init_wait\n");
+
+	printk("verify: c_size = %d\n", c_size);
 
 	err = -ENOMEM;
 	out_len_max = crypto_akcipher_maxsize(tfm);
@@ -350,9 +370,15 @@ static int __init ecdsa_kernel_module_init(void)
 	printk(KERN_INFO "Entering ecdsa_module\n");
 	int err = -ENOMEM;
 
-	init_ctx_randkey(); // use case 1: init random key
+	err = init_ctx_randkey(); // use case 1: init random key
+	if(err != 0) {
+		printk("Init random key failed: %d.\n", err);
+		return err;
+	}
+	printk("Init random key succeed.\n");
 
 	//if(init_ctx_setkey_no_asn1(test_key, key_len) != 0) // use case 2: init key from key buffer without asn1 decoding
+	//if(init_ctx_setkey_no_asn1(sm2_key, key_len) != 0) // use case 2: init key from key buffer without asn1 decoding
 	//	return err;
 	
 	//if(init_ctx_setkey_with_asn1() != 0) //设置密钥，发送方和接收方都需要运行这个函数 // use case 3: init key from key buffer with asn1 decoding
